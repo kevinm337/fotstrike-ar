@@ -1,0 +1,6 @@
+# Day 2 installs (keep minimal for now)
+opencv-python
+numpy
+
+# Day 3+ (YOLO)
+ultralytics
