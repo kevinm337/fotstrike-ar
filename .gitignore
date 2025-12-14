@@ -22,3 +22,4 @@ data/matches/*.mov
 docs/images/*.png
 docs/images/*.jpg
 outputs/
+notebooks/*.pt
