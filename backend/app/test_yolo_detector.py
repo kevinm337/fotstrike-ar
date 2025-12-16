@@ -8,11 +8,47 @@ import cv2
 from app.models.yolo_detector import YOLODetector
 
 
+def draw_detections(frame_bgr, detections):
+    # OpenCV uses BGR colors
+    PLAYER_COLOR = (255, 0, 0)   # blue
+    BALL_COLOR = (0, 255, 255)   # yellow
+
+    out = frame_bgr.copy()
+
+    for d in detections:
+        label = d["label"]
+        conf = float(d["confidence"])
+        x1, y1, x2, y2 = d["bbox"]
+
+        # Convert bbox to ints for drawing
+        x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+
+        color = PLAYER_COLOR if label == "player" else BALL_COLOR
+
+        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(
+            out,
+            f"{label} {conf:.2f}",
+            (x1, max(20, y1 - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            color,
+            2,
+        )
+
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", default="../data/matches/match1.mp4", help="Path to match video")
     parser.add_argument("--frame_idx", type=int, default=0, help="Which frame to test (0 = first frame)")
     parser.add_argument("--conf", type=float, default=0.35, help="Confidence threshold")
+    parser.add_argument(
+        "--out",
+        default="../outputs/day5",
+        help="Output folder to save annotated image",
+    )
     args = parser.parse_args()
 
     video_path = Path(args.video).expanduser().resolve()
@@ -23,7 +59,7 @@ def main() -> None:
     if not cap.isOpened():
         raise RuntimeError(f"Could not open video: {video_path}")
 
-    # Jump to a specific frame index (optional)
+    # Jump to a specific frame index
     if args.frame_idx > 0:
         cap.set(cv2.CAP_PROP_POS_FRAMES, args.frame_idx)
 
@@ -40,11 +76,17 @@ def main() -> None:
     print(f"Frame index requested: {args.frame_idx}")
     print(f"Detections: {len(detections)}")
     for d in detections:
-        # pretty print
-        label = d["label"]
-        conf = d["confidence"]
-        bbox = d["bbox"]
-        print(f"- {label} conf={conf:.3f} bbox={[round(x,1) for x in bbox]}")
+        print(f"- {d['label']} conf={d['confidence']:.3f} bbox={[round(x,1) for x in d['bbox']]}")
+
+    # Save annotated image
+    out_dir = Path(args.out).expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    annotated = draw_detections(frame, detections)
+    out_path = out_dir / f"yolo_test_frame_{args.frame_idx:06d}.png"
+    cv2.imwrite(str(out_path), annotated)
+
+    print(f"✅ Saved annotated image: {out_path}")
 
 
 if __name__ == "__main__":
