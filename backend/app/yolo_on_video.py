@@ -48,8 +48,9 @@ def main() -> None:
 
         detections = detector.detect(frame)
 
-        num_players = sum(1 for d in detections if d["label"] == "player")
-        has_ball = any(d["label"] == "ball" for d in detections)
+        num_players = sum(1 for d in detections if d.label == "player")
+        has_ball = any(d.label == "ball" for d in detections)
+
 
         players_sum += num_players
         if has_ball:

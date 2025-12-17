@@ -16,9 +16,9 @@ def draw_detections(frame_bgr, detections):
     out = frame_bgr.copy()
 
     for d in detections:
-        label = d["label"]
-        conf = float(d["confidence"])
-        x1, y1, x2, y2 = d["bbox"]
+        label = d.label
+        conf = float(d.confidence)
+        x1, y1, x2, y2 = d.bbox
 
         # Convert bbox to ints for drawing
         x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
@@ -76,7 +76,7 @@ def main() -> None:
     print(f"Frame index requested: {args.frame_idx}")
     print(f"Detections: {len(detections)}")
     for d in detections:
-        print(f"- {d['label']} conf={d['confidence']:.3f} bbox={[round(x,1) for x in d['bbox']]}")
+        print(f"- {d.label} conf={d.confidence:.3f} bbox={[round(x,1) for x in d.bbox]}")
 
     # Save annotated image
     out_dir = Path(args.out).expanduser().resolve()
