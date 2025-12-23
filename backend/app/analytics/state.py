@@ -1,117 +1,90 @@
 from __future__ import annotations
 
-import math
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, Field
+from app.analytics.heatmap import HeatmapGrid
 
 
-def center_from_bbox_xyxy(bbox: List[float]) -> Tuple[float, float]:
-    """
-    bbox: [x1, y1, x2, y2] in pixels
-    returns: (cx, cy)
-    """
+def bbox_center_xyxy(bbox: List[float]) -> Tuple[float, float]:
     x1, y1, x2, y2 = bbox
-    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+    return (x1 + x2) / 2.0, (y1 + y2) / 2.0
 
 
-def euclidean(a: Tuple[float, float], b: Tuple[float, float]) -> float:
-    return math.hypot(a[0] - b[0], a[1] - b[1])
-
-
-class PlayerState(BaseModel):
+@dataclass
+class PlayerState:
     track_id: int
-
-    # last known info
-    last_position: Optional[Tuple[float, float]] = None
-    last_timestamp: Optional[float] = None  # seconds since start
-
-    # analytics
-    total_distance: float = 0.0            # pixels (for now)
-    current_speed: float = 0.0             # pixels/sec (for now)
-
-    # history (used later for heatmaps, sprints, etc.)
-    positions: List[Tuple[float, float]] = Field(default_factory=list)
+    last_position: Optional[Tuple[float, float]] = None  # (cx, cy) in px
+    total_distance_px: float = 0.0
+    total_distance: float = 0.0  # meters
+    current_speed: float = 0.0   # m/s
+    positions: List[Tuple[float, float]] = field(default_factory=list)
 
 
 class MatchState:
-    """
-    Holds rolling analytics for a match.
-
-    NOTE: Right now "distance" and "speed" are in pixel units because we don't yet
-    map pixels -> meters. Later we will calibrate using pitch lines / homography.
-    """
-
-    def __init__(self, fps: float):
-        if fps <= 0:
-            raise ValueError("fps must be > 0")
+    def __init__(
+        self,
+        fps: float,
+        pixels_to_meters: float = 0.01,
+        history_len: int = 200,
+        video_width: Optional[int] = None,
+        video_height: Optional[int] = None,
+        heatmap_grid_x: int = 60,
+        heatmap_grid_y: int = 40,
+    ):
         self.fps = float(fps)
-        self.players: Dict[int, PlayerState] = {}
-        self.frame_index: int = 0
+        self.pixels_to_meters = float(pixels_to_meters)
+        self.history_len = int(history_len)
 
-    def _timestamp(self) -> float:
-        """Seconds since start for current frame."""
-        return self.frame_index / self.fps
+        self.players: Dict[int, PlayerState] = {}
+        self.frame_index = 0
+
+        self.heatmap: Optional[HeatmapGrid] = None
+        if video_width is not None and video_height is not None:
+            self.heatmap = HeatmapGrid(
+                width=int(video_width),
+                height=int(video_height),
+                grid_x=int(heatmap_grid_x),
+                grid_y=int(heatmap_grid_y),
+            )
 
     def update(self, tracked_players: List[dict]) -> None:
         """
-        tracked_players item format (from VisionPipeline):
-          {
-            "track_id": int,
-            "bbox": [x1,y1,x2,y2],
-            "label": "player"
-          }
-
-        On each frame:
-          - compute center position
-          - compute delta distance from last frame (per track_id)
-          - compute speed = distance / dt
-          - accumulate total distance
-          - store positions history
+        tracked_players items look like:
+        {"track_id": int, "bbox": [x1,y1,x2,y2], "label": "player"}
         """
-        t_now = self._timestamp()
-        dt = 1.0 / self.fps  # fixed timestep per processed frame
-
         for p in tracked_players:
             if p.get("label") != "player":
                 continue
 
-            track_id = int(p["track_id"])
-            bbox = p["bbox"]
-            cx, cy = center_from_bbox_xyxy(bbox)
-            pos = (float(cx), float(cy))
+            tid = int(p["track_id"])
+            bbox = [float(x) for x in p["bbox"]]
+            cx, cy = bbox_center_xyxy(bbox)
 
-            if track_id not in self.players:
-                # first time we see this player ID
-                self.players[track_id] = PlayerState(
-                    track_id=track_id,
-                    last_position=pos,
-                    last_timestamp=t_now,
-                    total_distance=0.0,
-                    current_speed=0.0,
-                    positions=[pos],
-                )
-                continue
+            if tid not in self.players:
+                self.players[tid] = PlayerState(track_id=tid)
 
-            st = self.players[track_id]
+            st = self.players[tid]
 
-            if st.last_position is None:
-                st.last_position = pos
-                st.last_timestamp = t_now
-                st.positions.append(pos)
-                continue
+            # heatmap accumulation (Day 16)
+            if self.heatmap is not None:
+                self.heatmap.add_position(cx, cy)
 
-            # distance between last position and current
-            d = euclidean(pos, st.last_position)
+            # speed + distance (Day 14)
+            if st.last_position is not None:
+                px_dist = ((cx - st.last_position[0]) ** 2 + (cy - st.last_position[1]) ** 2) ** 0.5
+                st.total_distance_px += px_dist
 
-            # speed (pixels/sec). Later convert to m/s after calibration.
-            speed = d / dt if dt > 0 else 0.0
+                meters = px_dist * self.pixels_to_meters
+                st.total_distance += meters
 
-            st.total_distance += d
-            st.current_speed = speed
-            st.last_position = pos
-            st.last_timestamp = t_now
-            st.positions.append(pos)
+                # speed approx using fps
+                st.current_speed = meters * self.fps
 
-        # advance frame counter AFTER processing
+            st.last_position = (cx, cy)
+
+            st.positions.append((cx, cy))
+            if len(st.positions) > self.history_len:
+                st.positions = st.positions[-self.history_len :]
+
         self.frame_index += 1

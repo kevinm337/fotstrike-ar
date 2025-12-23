@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple
 
 import numpy as np
 from ultralytics import YOLO
@@ -12,8 +12,15 @@ from app.schemas.detection import Detection
 @dataclass
 class DetectorConfig:
     model_path: str = "yolov8n.pt"
-    conf_th: float = 0.35
-    keep_classes: tuple[str, ...] = ("person", "sports ball")  # COCO names
+
+    # separate thresholds (ball needs lower threshold usually)
+    conf_player: float = 0.35
+    conf_ball: float = 0.05
+
+    # image size for YOLO inference (bigger helps small ball)
+    imgsz: int = 960
+
+    keep_classes: Tuple[str, ...] = ("person", "sports ball")  # COCO names
 
 
 class YOLODetector:
@@ -28,8 +35,19 @@ class YOLODetector:
         Detection(label="player" or "ball", confidence=float, bbox=[x1,y1,x2,y2])
     """
 
-    def __init__(self, model_path: str = "yolov8n.pt", conf_th: float = 0.35):
-        self.cfg = DetectorConfig(model_path=model_path, conf_th=conf_th)
+    def __init__(
+        self,
+        model_path: str = "yolov8n.pt",
+        conf_player: float = 0.35,
+        conf_ball: float = 0.05,
+        imgsz: int = 960,
+    ):
+        self.cfg = DetectorConfig(
+            model_path=model_path,
+            conf_player=float(conf_player),
+            conf_ball=float(conf_ball),
+            imgsz=int(imgsz),
+        )
         self.model = YOLO(self.cfg.model_path)
 
     def detect(self, frame: np.ndarray) -> List[Detection]:
@@ -39,11 +57,11 @@ class YOLODetector:
         # OpenCV gives BGR; convert to RGB for YOLO
         frame_rgb = frame[:, :, ::-1]
 
-        # verbose=False removes the big YOLO print spam
-        results = self.model(frame_rgb, verbose=False)
+        # Run YOLO
+        results = self.model(frame_rgb, verbose=False, imgsz=self.cfg.imgsz)
         r = results[0]
 
-        names = r.names  # class_id -> class_name
+        names = r.names
         out: List[Detection] = []
 
         for b in r.boxes:
@@ -51,14 +69,20 @@ class YOLODetector:
             cls_name = names[cls_id]
             conf = float(b.conf[0])
 
-            if conf < self.cfg.conf_th:
-                continue
             if cls_name not in self.cfg.keep_classes:
                 continue
 
-            x1, y1, x2, y2 = map(float, b.xyxy[0])  # pixel coords
+            # label mapping + per-class threshold
+            if cls_name == "person":
+                label = "player"
+                if conf < self.cfg.conf_player:
+                    continue
+            else:
+                label = "ball"
+                if conf < self.cfg.conf_ball:
+                    continue
 
-            label = "player" if cls_name == "person" else "ball"
+            x1, y1, x2, y2 = map(float, b.xyxy[0])
 
             out.append(
                 Detection(
