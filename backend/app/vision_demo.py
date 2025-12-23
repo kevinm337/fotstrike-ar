@@ -14,16 +14,34 @@ from app.analytics.state import MatchState
 
 def color_for_id(track_id: int) -> Tuple[int, int, int]:
     x = (track_id * 37) % 255
-    y = (track_id * 17) % 255
+    y = (track_id * 67) % 255
     z = (track_id * 97) % 255
-    return (int(x), int(y), int(z))  # BGR
+    return int(x), int(y), int(z)
 
 
-def bbox_center_xyxy(bbox: List[float]) -> Tuple[int, int]:
-    x1, y1, x2, y2 = bbox
+def bbox_center_xyxy(bbox_xyxy: List[int]) -> Tuple[int, int]:
+    x1, y1, x2, y2 = bbox_xyxy
     cx = int((x1 + x2) / 2.0)
     cy = int((y1 + y2) / 2.0)
     return cx, cy
+
+
+def _ensure_odd_ksize(k: int) -> int:
+    if k <= 0:
+        return 0
+    return k if (k % 2 == 1) else (k + 1)
+
+
+def _blend_heatmap(frame_bgr: np.ndarray, heat_bgr: np.ndarray, alpha: float) -> np.ndarray:
+    """
+    Blend a heatmap image onto frame using alpha in [0,1].
+    """
+    a = float(alpha)
+    if a <= 0:
+        return frame_bgr
+    if a >= 1:
+        return heat_bgr
+    return cv2.addWeighted(frame_bgr, 1.0 - a, heat_bgr, a, 0.0)
 
 
 def draw_tracks_with_stats(
@@ -47,11 +65,27 @@ def draw_tracks_with_stats(
 
         st = match_state.players.get(tid)
         if st is not None:
-            speed = float(st.current_speed)
-            dist = float(st.total_distance)
+            speed = float(getattr(st, "current_speed", 0.0))
+            dist = float(getattr(st, "total_distance", 0.0))
             text = f"ID {tid} | {speed:.2f} m/s | {dist:.1f} m"
         else:
             text = f"ID {tid}"
+
+        # pressure icon (Day 17)
+        if st is not None and getattr(st, "under_pressure", False):
+            icon_x = min(x2 + 10, frame_bgr.shape[1] - 1)
+            icon_y = min(max(y1 + 10, 0), frame_bgr.shape[0] - 1)
+            cv2.circle(frame_bgr, (int(icon_x), int(icon_y)), 8, (0, 0, 255), 2)
+            cv2.putText(
+                frame_bgr,
+                "!",
+                (int(icon_x) - 4, int(icon_y) + 5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 0, 255),
+                2,
+                cv2.LINE_AA,
+            )
 
         cv2.putText(
             frame_bgr,
@@ -94,116 +128,117 @@ def draw_tracks_with_stats(
 def main() -> None:
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--video-path", required=True, help="Path to match video")
+    # Support BOTH flags:
+    # - old style: --video-path (your command)
+    # - new/alt:  --video
+    parser.add_argument("--video-path", type=str, default="")
+    parser.add_argument("--video", type=str, default="")
 
-    # Keep --conf (sets both), plus allow separate knobs
-    parser.add_argument("--conf", type=float, default=None, help="Set BOTH conf-player and conf-ball")
-    parser.add_argument("--conf-player", type=float, default=0.35, help="YOLO confidence for players")
-    parser.add_argument("--conf-ball", type=float, default=0.05, help="YOLO confidence for ball")
-    parser.add_argument("--imgsz", type=int, default=960, help="YOLO inference size (bigger helps ball)")
+    parser.add_argument("--out", type=str, default="")
+    parser.add_argument("--max-frames", type=int, default=300)
+    parser.add_argument("--start-frame", type=int, default=0)
+    parser.add_argument("--stride", type=int, default=1)
 
-    parser.add_argument("--trail-len", type=int, default=25, help="Trail length in points")
-    parser.add_argument("--max-frames", type=int, default=0, help="Stop after N frames (0 = all)")
+    parser.add_argument("--conf-player", type=float, default=0.35)
+    parser.add_argument("--conf-ball", type=float, default=0.05)
+    parser.add_argument("--imgsz", type=int, default=640)
 
-    parser.add_argument("--save-video", default="", help="Optional output video path (mp4)")
+    parser.add_argument("--trail-len", type=int, default=25)
+    parser.add_argument("--pixels-to-meters", type=float, default=0.01)
 
-    parser.add_argument(
-        "--pixels-to-meters",
-        type=float,
-        default=0.01,
-        help="Rough conversion for analytics (temporary). Example: 0.01 means 1px ≈ 1cm",
-    )
+    # Day 17 pressure controls
+    parser.add_argument("--pressure-radius-px", type=float, default=60.0)
+    parser.add_argument("--pressure-threshold", type=int, default=2)
 
-    # Day 16: heatmap visualization / saving
-    parser.add_argument("--show-heatmap", action="store_true", help="Overlay heatmap live on video")
-    parser.add_argument("--heatmap-alpha", type=float, default=0.35, help="Heatmap overlay strength (0..1)")
-    parser.add_argument("--heatmap-blur", type=int, default=0, help="Optional blur kernel size (odd number)")
-    parser.add_argument("--save-heatmap", default="", help="Save heatmap PNG at end (e.g., ../docs/images/day16_heatmap.png)")
-    parser.add_argument("--save-heatmap-npy", default="", help="Save raw heatmap grid npy at end")
+    # Heatmap (Day 16) — matches your command flags
+    parser.add_argument("--show-heatmap", action="store_true")
+    parser.add_argument("--heatmap-alpha", type=float, default=0.35)
+    parser.add_argument("--heatmap-blur", type=int, default=21)
+    parser.add_argument("--save-heatmap", type=str, default="")
 
     args = parser.parse_args()
 
-    # if --conf is provided, override both
-    conf_player = args.conf_player
-    conf_ball = args.conf_ball
-    if args.conf is not None:
-        conf_player = float(args.conf)
-        conf_ball = float(args.conf)
+    # Resolve which video path was provided
+    video_arg = args.video_path or args.video
+    if not video_arg:
+        raise SystemExit("Error: you must pass --video-path <path> or --video <path>")
 
-    video_path = Path(args.video_path).expanduser().resolve()
+    video_path = Path(video_arg).expanduser().resolve()
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        raise RuntimeError(f"Could not open video: {video_path}")
+        raise RuntimeError(f"Could not open: {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if not fps or fps <= 0:
+        fps = 25.0
+    fps = float(fps)
 
     video_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     video_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps is None or fps <= 0:
-        fps = 25.0
-    fps = float(fps)
-
     pipeline = VisionPipeline(
         model_path="yolov8n.pt",
-        conf_player=conf_player,
-        conf_ball=conf_ball,
+        conf_player=args.conf_player,
+        conf_ball=args.conf_ball,
         imgsz=args.imgsz,
     )
 
     match_state = MatchState(
         fps=fps,
         pixels_to_meters=args.pixels_to_meters,
+        pressure_radius_px=args.pressure_radius_px,
+        pressure_threshold=args.pressure_threshold,
         history_len=200,
         video_width=video_w,
         video_height=video_h,
-        heatmap_grid_x=60,
-        heatmap_grid_y=40,
     )
 
-    writer = None
-    save_path: Optional[Path] = None
-    if args.save_video:
-        save_path = Path(args.save_video).expanduser().resolve()
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-
+    out_writer = None
+    if args.out:
+        out_path = Path(args.out).expanduser().resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(save_path), fourcc, fps, (video_w, video_h))
-        if not writer.isOpened():
-            writer = None
-            print("⚠️ Could not open VideoWriter. Continuing without saving.")
+        out_writer = cv2.VideoWriter(str(out_path), fourcc, fps, (video_w, video_h))
 
     trail_history: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
 
     frame_i = 0
-    print(f"Video: {video_path.name} | FPS={fps:.2f} | Size={video_w}x{video_h}")
-    print(f"conf_player={conf_player} conf_ball={conf_ball} imgsz={args.imgsz}")
-    print("Press ESC to quit")
+    processed = 0
+
+    blur_k = _ensure_odd_ksize(int(args.heatmap_blur))
+    alpha = float(args.heatmap_alpha)
 
     while True:
-        ok, frame = cap.read()
-        if not ok or frame is None:
+        ok, frame_bgr = cap.read()
+        if not ok:
             break
 
-        frame_data = pipeline.process_frame(frame)
-        players = frame_data.get("players", [])
-        ball = frame_data.get("ball", None)
+        if frame_i < args.start_frame:
+            frame_i += 1
+            continue
 
+        if (frame_i - args.start_frame) % args.stride != 0:
+            frame_i += 1
+            continue
+
+        out = pipeline.process_frame(frame_bgr)
+        players = out.get("players", [])
+        ball = out.get("ball", None)
+
+        # updates distance/speed + pressure flags inside MatchState
         match_state.update(players)
 
-        # optional heatmap overlay
-        display = frame
-        if args.show_heatmap and match_state.heatmap is not None:
-            display = match_state.heatmap.overlay_on_frame(
-                display,
-                alpha=args.heatmap_alpha,
-                blur_ksize=args.heatmap_blur,
-            )
+        # Optional: heatmap overlay
+        if args.show_heatmap and getattr(match_state, "heatmap", None) is not None:
+            heat_img = match_state.heatmap.render_colormap(blur_ksize=blur_k)
+            # heat_img is BGR image same size as frame
+            frame_bgr = _blend_heatmap(frame_bgr, heat_img, alpha)
 
         draw_tracks_with_stats(
-            display,
+            frame_bgr=frame_bgr,
             players=players,
             ball=ball,
             match_state=match_state,
@@ -211,44 +246,30 @@ def main() -> None:
             trail_len=args.trail_len,
         )
 
-        cv2.imshow("FotStrike AR - Vision Demo (Players + Ball + Stats + Heatmap)", display)
+        cv2.imshow("FotStrike AR - Vision Demo", frame_bgr)
+        if out_writer is not None:
+            out_writer.write(frame_bgr)
 
-        if writer is not None:
-            writer.write(display)
+        processed += 1
+        frame_i += 1
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == 27:
+        if processed >= args.max_frames:
             break
 
-        frame_i += 1
-        if args.max_frames and frame_i >= args.max_frames:
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
             break
 
     cap.release()
-    if writer is not None:
-        writer.release()
-        print(f"✅ Saved video: {save_path}")
-
-    # Save heatmap PNG at end
-    if args.save_heatmap and match_state.heatmap is not None:
-        out_png = match_state.heatmap.save_png(
-            args.save_heatmap,
-            blur_ksize=args.heatmap_blur,
-        )
-        print(f"✅ Saved heatmap: {out_png}")
-
-    # Save raw grid npy at end (optional)
-    if args.save_heatmap_npy and match_state.heatmap is not None:
-        out_npy = Path(args.save_heatmap_npy).expanduser().resolve()
-        out_npy.parent.mkdir(parents=True, exist_ok=True)
-        np.save(str(out_npy), match_state.heatmap.grid)
-        print(f"✅ Saved heatmap grid: {out_npy}")
-
-    if match_state.heatmap is not None:
-        print("Heatmap max cell count:", match_state.heatmap.max_value())
-
+    if out_writer is not None:
+        out_writer.release()
     cv2.destroyAllWindows()
-    print("Done")
+
+    # Save heatmap image at end (Day 16)
+    if args.save_heatmap and getattr(match_state, "heatmap", None) is not None:
+        save_path = Path(args.save_heatmap).expanduser().resolve()
+        match_state.heatmap.save_png(save_path, blur_ksize=blur_k)
+        print(f"[heatmap] saved to: {save_path}")
 
 
 if __name__ == "__main__":

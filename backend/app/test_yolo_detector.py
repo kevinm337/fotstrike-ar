@@ -43,7 +43,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", default="../data/matches/match1.mp4", help="Path to match video")
     parser.add_argument("--frame_idx", type=int, default=0, help="Which frame to test (0 = first frame)")
-    parser.add_argument("--conf", type=float, default=0.35, help="Confidence threshold")
+
+    # Separate thresholds
+    parser.add_argument("--conf-player", type=float, default=0.35, help="Confidence threshold for players")
+    parser.add_argument("--conf-ball", type=float, default=0.10, help="Confidence threshold for ball")
+
+    parser.add_argument("--imgsz", type=int, default=640, help="YOLO inference image size (can help ball)")
+
     parser.add_argument(
         "--out",
         default="../outputs/day5",
@@ -69,12 +75,18 @@ def main() -> None:
     if not ok or frame is None:
         raise RuntimeError("Failed to read a frame from the video.")
 
-    detector = YOLODetector(model_path="yolov8n.pt", conf_th=args.conf)
+    detector = YOLODetector(
+        model_path="yolov8n.pt",
+        conf_player=args.conf_player,
+        conf_ball=args.conf_ball,
+        imgsz=args.imgsz,
+    )
     detections = detector.detect(frame)
 
     print(f"Video: {video_path.name}")
     print(f"Frame index requested: {args.frame_idx}")
     print(f"Detections: {len(detections)}")
+
     for d in detections:
         print(f"- {d.label} conf={d.confidence:.3f} bbox={[round(x,1) for x in d.bbox]}")
 

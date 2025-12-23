@@ -1,6 +1,18 @@
-# Day 2 installs (keep minimal for now)
+# -----------------------------
+# FotStrike AR (Days 1–11)
+# Minimal, reproducible installs
+# -----------------------------
+
+# Day 1–2: video IO + frame extraction + drawing + saving video/images
 opencv-python
 numpy
 
-# Day 3+ (YOLO)
+# Day 3–6: YOLOv8 detection
 ultralytics
+
+# Day 7+: Detection schema (you hit "No module named pydantic" without this)
+pydantic
+
+# Day 3/4/8/9/10: notebooks (optional but recommended if you run .ipynb)
+jupyter
+ipykernel
