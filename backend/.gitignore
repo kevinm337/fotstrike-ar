@@ -1,0 +1,10 @@
+
+# model weights
+*.pt
+
+# outputs/data
+outputs/
+data/
+
+# notebooks checkpoints
+.ipynb_checkpoints/
