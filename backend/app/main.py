@@ -10,6 +10,7 @@ import uvicorn
 
 from app.vision.pipeline import VisionPipeline
 from app.analytics.state import MatchState
+from app.schemas.frame import FrameOut, PlayerOut, BallOut
 
 app = FastAPI(title="FotStrike AR API", version="0.3.0")
 
