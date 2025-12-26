@@ -16,3 +16,8 @@ pydantic
 # Day 3/4/8/9/10: notebooks (optional but recommended if you run .ipynb)
 jupyter
 ipykernel
+
+#Day 18
+fastapi
+uvicorn[standard]
+pydantic
